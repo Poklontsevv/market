@@ -5,11 +5,10 @@ from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler,
     filters, ContextTypes, CallbackQueryHandler, ConversationHandler
 )
-from datetime import datetime
 
 MARKET_FILE = "market.json"
 ORDERS_FILE = "orders.json"
-SELL_NAME, SELL_FILE = range(2)
+SELL_NAME, SELL_PRICE = range(2)
 
 for file in [MARKET_FILE, ORDERS_FILE]:
     if not os.path.exists(file):
@@ -17,7 +16,7 @@ for file in [MARKET_FILE, ORDERS_FILE]:
             json.dump([], f)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Добро пожаловать! Используйте /sell для продажи и /listings для покупки.")
+    await update.message.reply_text("Добро пожаловать в маркет! Используйте /sell, /buy, /listings или /myitems.")
 
 async def sell(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Введите название предмета:")
@@ -25,32 +24,20 @@ async def sell(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def sell_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['item_name'] = update.message.text
-    await update.message.reply_text("Теперь отправьте файл (документ, фото или видео), представляющий предмет.")
-    return SELL_FILE
+    await update.message.reply_text("Введите цену:")
+    return SELL_PRICE
 
-async def sell_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    file_id = None
-    file_type = None
-
-    if update.message.document:
-        file_id = update.message.document.file_id
-        file_type = "document"
-    elif update.message.photo:
-        file_id = update.message.photo[-1].file_id
-        file_type = "photo"
-    elif update.message.video:
-        file_id = update.message.video.file_id
-        file_type = "video"
-    else:
-        await update.message.reply_text("Пожалуйста, отправьте документ, фото или видео.")
-        return SELL_FILE
+async def sell_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        price = float(update.message.text)
+    except ValueError:
+        await update.message.reply_text("Введите корректную цену.")
+        return SELL_PRICE
 
     item = {
         "user_id": update.effective_user.id,
         "item_name": context.user_data['item_name'],
-        "file_id": file_id,
-        "file_type": file_type,
-        "timestamp": datetime.utcnow().isoformat()
+        "price": price
     }
 
     with open(MARKET_FILE, 'r+') as f:
@@ -60,7 +47,11 @@ async def sell_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         json.dump(market, f, indent=2)
         f.truncate()
 
-    await update.message.reply_text("Предмет успешно выставлен!")
+    await update.message.reply_text("Предмет выставлен на продажу!")
+    return ConversationHandler.END
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Операция отменена.")
     return ConversationHandler.END
 
 async def listings(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -68,19 +59,45 @@ async def listings(update: Update, context: ContextTypes.DEFAULT_TYPE):
         market = json.load(f)
 
     if not market:
-        await update.message.reply_text("Нет доступных предметов.")
+        await update.message.reply_text("В маркете пока нет предметов.")
+        return
+
+    msg = "\n".join([f"{i + 1}. {item['item_name']} — {item['price']} монет" for i, item in enumerate(market)])
+    await update.message.reply_text(msg)
+
+async def myitems(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    with open(MARKET_FILE, 'r') as f:
+        market = json.load(f)
+
+    items = [item for item in market if item['user_id'] == user_id]
+
+    if not items:
+        await update.message.reply_text("Вы не выставляли предметов.")
+        return
+
+    msg = "\n".join([f"{i + 1}. {item['item_name']} — {item['price']} монет" for i, item in enumerate(items)])
+    await update.message.reply_text(msg)
+
+async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    with open(MARKET_FILE, 'r') as f:
+        market = json.load(f)
+
+    if not market:
+        await update.message.reply_text("Нет доступных предметов для покупки.")
         return
 
     keyboard = [
-        [InlineKeyboardButton(f"Купить: {entry['item_name']}", callback_data=str(i))]
-        for i, entry in enumerate(market)
+        [InlineKeyboardButton(f"{item['item_name']} - {item['price']} монет", callback_data=str(i))]
+        for i, item in enumerate(market)
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("Витрина товаров:", reply_markup=reply_markup)
+    await update.message.reply_text("Выберите предмет для покупки:", reply_markup=reply_markup)
 
 async def handle_buy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+
     index = int(query.data)
 
     with open(MARKET_FILE, 'r+') as f:
@@ -93,43 +110,32 @@ async def handle_buy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         json.dump(market, f, indent=2)
         f.truncate()
 
+    order = {
+        "buyer_id": query.from_user.id,
+        "item_name": item['item_name'],
+        "price": item['price'],
+        "seller_id": item['user_id']
+    }
+
     with open(ORDERS_FILE, 'r+') as f:
         orders = json.load(f)
-        orders.append({
-            "buyer_id": query.from_user.id,
-            "seller_id": item['user_id'],
-            "item_name": item['item_name'],
-            "timestamp": datetime.utcnow().isoformat()
-        })
+        orders.append(order)
         f.seek(0)
         json.dump(orders, f, indent=2)
         f.truncate()
 
-    caption = f"Вы купили: {item['item_name']}"
-    if item['file_type'] == "document":
-        await query.message.reply_document(document=item['file_id'], caption=caption)
-    elif item['file_type'] == "photo":
-        await query.message.reply_photo(photo=item['file_id'], caption=caption)
-    elif item['file_type'] == "video":
-        await query.message.reply_video(video=item['file_id'], caption=caption)
-    else:
-        await query.message.reply_text(caption)
-
-    await query.edit_message_text("Покупка завершена.")
-
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Операция отменена.")
-    return ConversationHandler.END
+    await query.edit_message_text(f"Вы купили: {item['item_name']} за {item['price']} монет.")
 
 def main():
     TOKEN = "7710566564:AAGeK5NsObb0uxdbtzbj4Vij5kMB8XUaZvA"
+
     app = ApplicationBuilder().token(TOKEN).build()
 
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("sell", sell)],
         states={
             SELL_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, sell_name)],
-            SELL_FILE: [MessageHandler(filters.ALL & ~filters.COMMAND, sell_file)],
+            SELL_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, sell_price)],
         },
         fallbacks=[CommandHandler("cancel", cancel)]
     )
@@ -137,6 +143,8 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(conv_handler)
     app.add_handler(CommandHandler("listings", listings))
+    app.add_handler(CommandHandler("myitems", myitems))
+    app.add_handler(CommandHandler("buy", buy))
     app.add_handler(CallbackQueryHandler(handle_buy_callback))
 
     print("Бот запущен...")
