@@ -253,13 +253,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await listings(update, context)
     elif data == 'myitems':
         await myitems(update, context)
-    elif data == 'sell':
+ elif data == 'sell':
     await context.bot.send_message(
         chat_id=query.message.chat.id,
         text="Введите название предмета:"
     )
     context.user_data.clear()
-    return SELL_NAME  # вручную инициируем цепочку
+    context.user_data["sell_from_button"] = True
+    return SELL_NAME
     elif data == 'menu':
         await start(update, context)
     elif data.startswith('buy_'):
